@@ -1,6 +1,6 @@
 [package]
 name = "clipygo-plugin-obsidian"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Obsidian vault plugin for clipygo"
 authors = ["Georg Nelles"]
@@ -16,3 +16,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 dirs = "6"
+base64 = "0.22"

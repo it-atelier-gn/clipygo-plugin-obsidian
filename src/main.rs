@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write as IoWrite};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use base64::Engine;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,12 @@ struct ObsidianConfig {
     daily_notes_format: String,
     inbox_note: String,
     append_template: String,
+    #[serde(default = "default_attachments_folder")]
+    attachments_folder: String,
+}
+
+fn default_attachments_folder() -> String {
+    "attachments".to_string()
 }
 
 impl Default for ObsidianConfig {
@@ -76,6 +83,7 @@ impl Default for ObsidianConfig {
             daily_notes_format: "%Y-%m-%d".to_string(),
             inbox_note: "Inbox.md".to_string(),
             append_template: "\n---\n*{timestamp}*\n{content}\n".to_string(),
+            attachments_folder: default_attachments_folder(),
         }
     }
 }
@@ -259,6 +267,41 @@ fn create_new_note(config: &ObsidianConfig, content: &str) -> Result<PathBuf, St
     Ok(note_path)
 }
 
+/// Decodes base64 image content, saves it as a PNG in the attachments folder,
+/// and returns the Obsidian wiki-link embed (`![[attachments/name.png]]`).
+fn save_image(config: &ObsidianConfig, base64_content: &str) -> Result<String, String> {
+    let vault = resolve_vault_path(config)?;
+    let attach_dir = vault.join(&config.attachments_folder);
+    fs::create_dir_all(&attach_dir)
+        .map_err(|e| write_error(format!("Failed to create attachments folder: {e}")))?;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_content)
+        .map_err(|e| format!("Invalid base64 image data: {e}"))?;
+
+    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let filename = format!("clip-{ts}.png");
+    let image_path = attach_dir.join(&filename);
+
+    fs::write(&image_path, &bytes)
+        .map_err(|e| write_error(format!("Failed to save image: {e}")))?;
+
+    // Return Obsidian-style embed link with relative path from vault root
+    Ok(format!("![[{}/{}]]", config.attachments_folder, filename))
+}
+
+fn save_image_or_text(
+    config: &ObsidianConfig,
+    content: &str,
+    is_image: bool,
+) -> Result<String, String> {
+    if is_image {
+        save_image(config, content)
+    } else {
+        Ok(content.to_string())
+    }
+}
+
 // --- Handlers ---
 
 // 1x1 purple pixel PNG for the icon
@@ -284,7 +327,7 @@ fn handle(request: Request) -> serde_json::Value {
                 targets.push(Target {
                     id: "daily-note".to_string(),
                     provider: "Obsidian",
-                    formats: vec!["text"],
+                    formats: vec!["text", "image"],
                     title: "Daily Note".to_string(),
                     description: "Append to today's daily note".to_string(),
                     image: ICON,
@@ -292,7 +335,7 @@ fn handle(request: Request) -> serde_json::Value {
                 targets.push(Target {
                     id: "inbox".to_string(),
                     provider: "Obsidian",
-                    formats: vec!["text"],
+                    formats: vec!["text", "image"],
                     title: "Inbox".to_string(),
                     description: format!("Append to {}", config.inbox_note),
                     image: ICON,
@@ -300,7 +343,7 @@ fn handle(request: Request) -> serde_json::Value {
                 targets.push(Target {
                     id: "new-note".to_string(),
                     provider: "Obsidian",
-                    formats: vec!["text"],
+                    formats: vec!["text", "image"],
                     title: "New Note".to_string(),
                     description: "Create a new note from clipboard".to_string(),
                     image: ICON,
@@ -342,6 +385,11 @@ fn handle(request: Request) -> serde_json::Value {
                             "type": "string",
                             "title": "Append Template",
                             "description": "Template for appended entries. Use {timestamp} and {content}"
+                        },
+                        "attachments_folder": {
+                            "type": "string",
+                            "title": "Attachments Folder",
+                            "description": "Subfolder for saved images (relative to vault root)"
                         }
                     }
                 },
@@ -350,7 +398,8 @@ fn handle(request: Request) -> serde_json::Value {
                     "daily_notes_folder": config.daily_notes_folder,
                     "daily_notes_format": config.daily_notes_format,
                     "inbox_note": config.inbox_note,
-                    "append_template": config.append_template
+                    "append_template": config.append_template,
+                    "attachments_folder": config.attachments_folder
                 }
             })
         }
@@ -372,6 +421,9 @@ fn handle(request: Request) -> serde_json::Value {
             if let Some(v) = values.get("append_template").and_then(|v| v.as_str()) {
                 config.append_template = v.to_string();
             }
+            if let Some(v) = values.get("attachments_folder").and_then(|v| v.as_str()) {
+                config.attachments_folder = v.to_string();
+            }
             save_config(&config);
             *CONFIG.lock().unwrap() = Some(config);
             serde_json::to_value(SendResponse {
@@ -384,19 +436,26 @@ fn handle(request: Request) -> serde_json::Value {
         Request::Send {
             target_id,
             content,
-            format: _,
+            format,
         } => {
             let config = get_config();
+            let is_image = format == "image";
+
             let result = match target_id.as_str() {
                 "daily-note" => {
-                    let entry = format_entry(&config, &content);
-                    daily_note_path(&config).and_then(|p| append_to_note(&p, &entry))
+                    save_image_or_text(&config, &content, is_image).and_then(|entry_content| {
+                        let entry = format_entry(&config, &entry_content);
+                        daily_note_path(&config).and_then(|p| append_to_note(&p, &entry))
+                    })
                 }
                 "inbox" => {
-                    let entry = format_entry(&config, &content);
-                    inbox_note_path(&config).and_then(|p| append_to_note(&p, &entry))
+                    save_image_or_text(&config, &content, is_image).and_then(|entry_content| {
+                        let entry = format_entry(&config, &entry_content);
+                        inbox_note_path(&config).and_then(|p| append_to_note(&p, &entry))
+                    })
                 }
-                "new-note" => create_new_note(&config, &content).map(|_| ()),
+                "new-note" => save_image_or_text(&config, &content, is_image)
+                    .and_then(|c| create_new_note(&config, &c).map(|_| ())),
                 _ => Err(format!("Unknown target: {target_id}")),
             };
 
@@ -457,6 +516,7 @@ mod tests {
             daily_notes_format: "%Y-%m-%d".to_string(),
             inbox_note: "Inbox.md".to_string(),
             append_template: "\n---\n*{timestamp}*\n{content}\n".to_string(),
+            attachments_folder: "attachments".to_string(),
         }
     }
 
@@ -631,5 +691,78 @@ mod tests {
     fn detect_vault_path_returns_none_when_no_obsidian() {
         // This test just ensures it doesn't panic
         let _ = detect_vault_path();
+    }
+
+    // 1x1 red pixel PNG as base64
+    const TEST_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn send_image_to_daily_note_saves_png_and_embeds() {
+        with_temp_vault(|vault| {
+            *CONFIG.lock().unwrap() = Some(test_config(&vault));
+            let resp = handle(Request::Send {
+                target_id: "daily-note".to_string(),
+                content: TEST_PNG.to_string(),
+                format: "image".to_string(),
+            });
+            assert_eq!(resp["success"], true);
+
+            // Image file should exist in attachments folder
+            let attachments = vault.join("attachments");
+            assert!(attachments.is_dir());
+            let pngs: Vec<_> = fs::read_dir(&attachments)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "png"))
+                .collect();
+            assert_eq!(pngs.len(), 1);
+
+            // Daily note should contain the embed link
+            let today = Local::now().format("%Y-%m-%d").to_string();
+            let note = vault.join("Daily Notes").join(format!("{today}.md"));
+            let body = fs::read_to_string(&note).unwrap();
+            assert!(body.contains("![[attachments/"));
+            assert!(body.contains(".png]]"));
+        });
+    }
+
+    #[test]
+    fn send_image_to_new_note_creates_note_with_embed() {
+        with_temp_vault(|vault| {
+            *CONFIG.lock().unwrap() = Some(test_config(&vault));
+            let resp = handle(Request::Send {
+                target_id: "new-note".to_string(),
+                content: TEST_PNG.to_string(),
+                format: "image".to_string(),
+            });
+            assert_eq!(resp["success"], true);
+
+            let attachments = vault.join("attachments");
+            assert!(attachments.is_dir());
+
+            // A new note should exist containing the embed
+            let notes: Vec<_> = fs::read_dir(&vault)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                .collect();
+            assert_eq!(notes.len(), 1);
+            let body = fs::read_to_string(notes[0].path()).unwrap();
+            assert!(body.contains("![[attachments/"));
+        });
+    }
+
+    #[test]
+    fn send_invalid_base64_image_fails() {
+        with_temp_vault(|vault| {
+            *CONFIG.lock().unwrap() = Some(test_config(&vault));
+            let resp = handle(Request::Send {
+                target_id: "daily-note".to_string(),
+                content: "not-valid-base64!!!".to_string(),
+                format: "image".to_string(),
+            });
+            assert_eq!(resp["success"], false);
+            assert!(resp["error"].as_str().unwrap().contains("base64"));
+        });
     }
 }
