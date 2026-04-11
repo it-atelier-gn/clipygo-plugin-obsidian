@@ -158,6 +158,21 @@ fn detect_vault_path() -> Option<String> {
 
 // --- Note writing ---
 
+/// Wraps a file I/O error with a hint about Windows Defender Controlled Folder Access,
+/// which blocks unsigned executables from writing to protected folders (Documents, Desktop, etc.).
+fn write_error(msg: String) -> String {
+    if cfg!(target_os = "windows") {
+        format!(
+            "{msg} — If your vault is in Documents or another protected folder, \
+             Windows Defender Controlled Folder Access may be blocking this plugin. \
+             Allow this app in Windows Security > Ransomware protection, \
+             or move your vault to an unprotected folder."
+        )
+    } else {
+        msg
+    }
+}
+
 fn resolve_vault_path(config: &ObsidianConfig) -> Result<PathBuf, String> {
     let path = PathBuf::from(&config.vault_path);
     if config.vault_path.is_empty() {
@@ -179,17 +194,18 @@ fn format_entry(config: &ObsidianConfig, content: &str) -> String {
 
 fn append_to_note(note_path: &PathBuf, entry: &str) -> Result<(), String> {
     if let Some(parent) = note_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| write_error(format!("Failed to create directory: {e}")))?;
     }
 
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(note_path)
-        .map_err(|e| format!("Failed to open note: {e}"))?;
+        .map_err(|e| write_error(format!("Failed to open note: {e}")))?;
 
     file.write_all(entry.as_bytes())
-        .map_err(|e| format!("Failed to write to note: {e}"))?;
+        .map_err(|e| write_error(format!("Failed to write to note: {e}")))?;
 
     Ok(())
 }
@@ -234,10 +250,12 @@ fn create_new_note(config: &ObsidianConfig, content: &str) -> Result<PathBuf, St
         // Append timestamp to avoid overwriting
         let ts = Local::now().format("%H%M%S").to_string();
         let note_path = vault.join(format!("{name} {ts}.md"));
-        fs::write(&note_path, content).map_err(|e| format!("Failed to create note: {e}"))?;
+        fs::write(&note_path, content)
+            .map_err(|e| write_error(format!("Failed to create note: {e}")))?;
         return Ok(note_path);
     }
-    fs::write(&note_path, content).map_err(|e| format!("Failed to create note: {e}"))?;
+    fs::write(&note_path, content)
+        .map_err(|e| write_error(format!("Failed to create note: {e}")))?;
     Ok(note_path)
 }
 
