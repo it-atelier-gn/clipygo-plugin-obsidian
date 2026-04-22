@@ -1,8 +1,8 @@
 use std::fs;
 use std::io::{self, BufRead, Write as IoWrite};
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use base64::Engine;
