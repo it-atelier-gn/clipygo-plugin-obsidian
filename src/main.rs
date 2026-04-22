@@ -1,6 +1,8 @@
 use std::fs;
 use std::io::{self, BufRead, Write as IoWrite};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 use std::sync::Mutex;
 
 use base64::Engine;
@@ -509,7 +511,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    fn test_config(vault: &PathBuf) -> ObsidianConfig {
+    fn test_config(vault: &Path) -> ObsidianConfig {
         ObsidianConfig {
             vault_path: vault.to_string_lossy().to_string(),
             daily_notes_folder: "Daily Notes".to_string(),
