@@ -1,6 +1,6 @@
 [package]
 name = "clipygo-plugin-obsidian"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Obsidian vault plugin for clipygo"
 authors = ["Georg Nelles"]
